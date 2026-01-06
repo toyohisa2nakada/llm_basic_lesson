@@ -369,36 +369,31 @@
         }
 
         // vocabSize: 全単語数, inputDim: 入力単語数, numHeads keyDim: MultiHeadAttention paramter, learningRate:学習率
-        function createSimpleLLM({ vocabSize, inputDim, numHeads, keyDim, learningRate }) {
+        function createSimpleFNN({ vocabSize, inputDim, keyDim, learningRate, type }) {
             const input = tf.input({ shape: [inputDim], dtype: "int32", name: "char_input" });
             // [Batch, inputDim, embDim]
-            const embedding = tf.layers.embedding({ inputDim: vocabSize, outputDim: keyDim, maskZero: true });
-            let charEmbed = embedding.apply(input);
-
-            // [Batch, embDim, embDim]
-            const mha = new MultiHeadAttention({ keyDim, numHeads });
-            let attnOut = mha.apply([charEmbed, charEmbed, charEmbed]);
-            attnOut = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(attnOut);
-
-            charEmbed = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(charEmbed);
-            let pooled = tf.layers.add().apply([attnOut, charEmbed])
-            pooled = tf.layers.flatten().apply(pooled);
-            const logits = tf.layers.dense({ units: vocabSize }).apply(pooled);
+            let charEmbed = tf.layers.embedding({ inputDim: vocabSize, outputDim: keyDim, maskZero: true }).apply(input);
+            // [Batch, inputDim*embDim]
+            if (type === "slc") {
+                charEmbed = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(charEmbed);
+            }
+            const flat = tf.layers.flatten().apply(charEmbed);
+            const logits = tf.layers.dense({ units: vocabSize }).apply(flat);
             const output = tf.layers.activation({ activation: "softmax" }).apply(logits);
-            const model = tf.model({ inputs: input, outputs: output, name: `llm` });
+            const model = tf.model({ inputs: input, outputs: output, name: `fnn(${type ?? ""})` });
 
             model.compile({
                 optimizer: tf.train.adam(learningRate),
                 loss: "sparseCategoricalCrossentropy",
                 metrics: ["accuracy"],
             })
-            return { model, options: { mha } };
+            return { model };
         }
         function createSimpleGAP({ vocabSize, inputDim, keyDim, learningRate, type }) {
             const input = tf.input({ shape: [inputDim], dtype: "int32", name: "char_input" });
             // [Batch, inputDim, embDim]
             const embedding = tf.layers.embedding({ inputDim: vocabSize, outputDim: keyDim, maskZero: true });
-            let charEmbed = embedding.apply(input);
+            const charEmbed = embedding.apply(input);
 
             // [Batch, embDim, embDim]
             let pooled = undefined;
@@ -420,26 +415,32 @@
             })
             return { model };
         }
-        function createSimpleFNN({ vocabSize, inputDim, keyDim, learningRate, type }) {
+        function createSimpleLLM({ vocabSize, inputDim, numHeads, keyDim, learningRate }) {
             const input = tf.input({ shape: [inputDim], dtype: "int32", name: "char_input" });
             // [Batch, inputDim, embDim]
-            let charEmbed = tf.layers.embedding({ inputDim: vocabSize, outputDim: keyDim, maskZero: true }).apply(input);
-            // [Batch, inputDim*embDim]
-            if (type === "slc") {
-                charEmbed = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(charEmbed);
-            }
-            charEmbed = tf.layers.flatten().apply(charEmbed);
-            const logits = tf.layers.dense({ units: vocabSize }).apply(charEmbed);
+            const embedding = tf.layers.embedding({ inputDim: vocabSize, outputDim: keyDim, maskZero: true });
+            const charEmbed = embedding.apply(input);
+
+            // [Batch, embDim, embDim]
+            const mha = new MultiHeadAttention({ keyDim, numHeads });
+            const attn = mha.apply([charEmbed, charEmbed, charEmbed]);
+            const lastAttn = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(attn);
+
+            const lastEmbed = (new SliceLayer({ startIndex: charEmbed.shape[1] - 1 })).apply(charEmbed);
+            const added = tf.layers.add().apply([lastAttn, lastEmbed])
+            const pooled = tf.layers.flatten().apply(added);
+            const logits = tf.layers.dense({ units: vocabSize }).apply(pooled);
             const output = tf.layers.activation({ activation: "softmax" }).apply(logits);
-            const model = tf.model({ inputs: input, outputs: output, name: `fnn(${type ?? ""})` });
+            const model = tf.model({ inputs: input, outputs: output, name: `llm` });
 
             model.compile({
                 optimizer: tf.train.adam(learningRate),
                 loss: "sparseCategoricalCrossentropy",
                 metrics: ["accuracy"],
             })
-            return { model };
+            return { model, options: { mha } };
         }
+
         function evaluateModel({ model, datasets }) {
             return tf.tidy(() => {
                 const inp = datasets.toTensor(datasets.test_patterns.map(e => datasets.encode(e)))
@@ -475,13 +476,13 @@
                     numHeads,
                     learningRate,
                 }),
-                createSimpleGAP({
-                    vocabSize: Object.keys(datasets.vocab).length,
-                    inputDim: datasets.train_x.shape[1],
-                    keyDim,
-                    learningRate,
-                    type: "ful",
-                }),
+                // createSimpleGAP({
+                //     vocabSize: Object.keys(datasets.vocab).length,
+                //     inputDim: datasets.train_x.shape[1],
+                //     keyDim,
+                //     learningRate,
+                //     type: "ful",
+                // }),
                 createSimpleGAP({
                     vocabSize: Object.keys(datasets.vocab).length,
                     inputDim: datasets.train_x.shape[1],
@@ -489,13 +490,13 @@
                     learningRate,
                     type: "slc",
                 }),
-                createSimpleFNN({
-                    vocabSize: Object.keys(datasets.vocab).length,
-                    inputDim: datasets.train_x.shape[1],
-                    keyDim,
-                    learningRate,
-                    type: "ful",
-                }),
+                // createSimpleFNN({
+                //     vocabSize: Object.keys(datasets.vocab).length,
+                //     inputDim: datasets.train_x.shape[1],
+                //     keyDim,
+                //     learningRate,
+                //     type: "ful",
+                // }),
                 createSimpleFNN({
                     vocabSize: Object.keys(datasets.vocab).length,
                     inputDim: datasets.train_x.shape[1],
@@ -540,12 +541,12 @@
             }
             function predict({ models, datasets, input }) {
                 return tf.tidy(() => {
-                    // console.log(input);
-                    // console.log(datasets)
-
                     const { tokens, errorMessage } = datasets.tokenize(input);
                     if (tokens === null) {
                         updateModelEvaluationPanel({ modelEvaluationElem, errorMessage });
+                        return;
+                    } else if (tokens.length > datasets.maxLen - 1) {
+                        updateModelEvaluationPanel({ modelEvaluationElem, errorMessage: `語数が多いです。最大 ${datasets.maxLen - 1}` });
                         return;
                     }
                     const x = datasets.toTensor([tokens]);
@@ -566,7 +567,7 @@
         }
 
 
-        setupVisor({ tfvis, setDatasets, learn });
+        setupVisor({ tfvis, setDatasets, learn, datasetsMode: "select" });
 
     </script>
 </body>
