@@ -379,7 +379,7 @@ async function learn({ datasets, learningRate, epochs, verbose = true }) {
         return;
     }
     setModels({ learningRate });
-    const resultsElem = datasets.test_patterns ? setupResultsPanel({ tfvis, models, test_patterns: datasets.test_patterns, correct_answers: datasets.correct_answers }) : undefined;
+    const resultsElem = datasets.test_patterns.length !== 0 ? setupResultsPanel({ tfvis, models, test_patterns: datasets.test_patterns, correct_answers: datasets.correct_answers }) : undefined;
 
     for (let i = 0; i < models.length; i += 1) {
         const model = models[i].model;
@@ -395,7 +395,7 @@ async function learn({ datasets, learningRate, epochs, verbose = true }) {
             ),
         });
         models[i].options?.mha?.setKeepAttentionScores(true);
-        if (datasets.test_patterns !== undefined) {
+        if (datasets.test_patterns.length > 0) {
             const results = evaluateModel({ model, datasets });
             updateResultsPanel({ modelEntry: models[i], datasets, resultsElem, results })
         }
